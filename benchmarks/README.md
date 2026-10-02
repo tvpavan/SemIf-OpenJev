@@ -27,6 +27,19 @@ python benchmarks/build_perturbations.py \
 
 `docs/REPRODUCE.md` gives the complete command for rebuilding `results/raw/perturbation-comparison.json` from the committed row-level predictions. The regenerated report is byte-identical to the committed report.
 
+Recompute the option-order sensitivity digest (flips, total variation, position bias) from those same committed files without loading a model:
+
+```bash
+python benchmarks/evaluate_option_order.py \
+  --gold benchmarks/data/authored144.jsonl \
+  --perturbations benchmarks/data/perturbations108.jsonl \
+  --base-predictions results/raw/predictions/direct-authored144.jsonl \
+  --perturbation-predictions results/raw/predictions/direct-perturbations108.jsonl \
+  --output /tmp/option-order-direct.json
+```
+
+See [OPTION_ORDER.md](../docs/OPTION_ORDER.md) for the opt-in `--stabilize-order K` scorer flag and its `K×` cost. Do not mix stabilize-order outputs into frozen quality tables.
+
 ## Full 37×21 systems benchmark
 
 ```bash
@@ -46,6 +59,18 @@ CUDA_VISIBLE_DEVICES=0 python benchmarks/shape777_reranker.py \
   --input benchmarks/data/shape777.jsonl \
   --pair-batch-sizes 1,4,8 \
   --output shape777-reranker-run.json
+```
+
+The same fixture on a local GGUF through llama.cpp, layers offloaded by default when the wheel
+can, branches sized per state:
+
+```bash
+python benchmarks/shape777.py --backend llamacpp \
+  --model Qwen/Qwen3.5-4B \
+  --revision 851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a \
+  --gguf /path/to/Qwen_Qwen3.5-4B-Q4_K_M.gguf \
+  --input benchmarks/data/shape777.jsonl \
+  --output shape777-llamacpp-run.json
 ```
 
 The 6.7 MB fixture is project-authored and has SHA-256 `8dcf414b12fc2684e3c4ca5f3ebfd3f525f5346fec4a9bc67eb65138101f55f1`. Both runners write aggregate timings and row-level predictions.

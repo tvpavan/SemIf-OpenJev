@@ -54,19 +54,19 @@ export HF_HOME=/path/to/large-drive/huggingface
 pip install -e '.[test]'
 ```
 
-**CPU only:** the llama.cpp backend scores the same prompts from a local GGUF
-checkpoint with no CUDA device. Install `pip install -e '.[test,llamacpp]'`,
-fetch a GGUF (for example `Qwen_Qwen3.5-4B-Q4_K_M.gguf` from
-`bartowski/Qwen_Qwen3.5-4B-GGUF`), and add `--backend llamacpp --gguf
-/path/to/model.gguf`; `--llama-threads` caps the CPU threads. Prompt
-construction stays on the pinned reference tokenizer, so `prompt_sha256`
-matches the Torch backend row for row; scores carry the GGUF checksum and are
-conditional on the quantized weights. Direct and prefix-cached execution can
-have small numerical differences from different llama.cpp evaluation paths;
-compare decisions or probabilities with a tolerance rather than raw logits
-bit for bit. One loaded backend owns one stateful scoring context. For a much
+**llama.cpp / GGUF:** the llama.cpp backend scores the same prompts from a local GGUF
+checkpoint, on CPU or with `--llama-gpu-layers` offloaded to a GPU. Install
+`pip install -e '.[test,llamacpp]'`, download a GGUF of the pinned model (for example
+`bartowski/Qwen_Qwen3.5-4B-GGUF`), and add `--backend llamacpp --gguf /path/to/model.gguf`.
+Layers are offloaded by default when the wheel can, and shared mode fans a state's questions
+out over copied sequences in as few batched decodes as the context allows — sized from the
+rows themselves, which also works on hybrid Qwen3.5 memories. Prompt hashes match the
+Torch backend; quantized option scores have small numerical differences. See
+[docs/LLAMACPP.md](docs/LLAMACPP.md). For a much
 slower full-precision Torch reference path, explicitly pass
 `--device cpu --dtype float32` to the standard scorer command.
+
+**SGLang server:** `--backend sglang` scores the same prompts through a running SGLang server that contains sgl-project/sglang#40826 (SGLang main from commit 174a5f37 of 2026-09-24 on, or a nightly from 0.5.21.dev20260925 on). The pinned reference tokenizer still builds every prompt, so `prompt_sha256` matches the Torch backend row for row, and the server scores those token ids on its own GPU. `--sglang-url` names the server (default `http://127.0.0.1:30000`). Scores can differ from Torch, and shared mode on SGLang does not guarantee a single prefill of the state. The [SGLang guide](docs/SGLANG.md) has the server launch and the refused server settings.
 
 Run the owned examples:
 
@@ -190,7 +190,9 @@ Returned probabilities are conditional on the supplied options. Calibrate and va
 - [Method](docs/METHOD.md) — frozen prompts, metrics, and timing scope
 - [Reproduce](docs/REPRODUCE.md) — exact environment, pinned commands, perturbations, and verification
 - [Apple Silicon](docs/APPLE_SILICON.md) — MPS and optional MLX backends
+- [SGLang server backend](docs/SGLANG.md)
 - [Calibration](docs/CALIBRATION.md) — fitted temperatures, out-of-fold evidence, and application
+- [Option order](docs/OPTION_ORDER.md) — order-sensitivity measurement and opt-in `--stabilize-order`
 - [EXL3 bridge](exl3-bridge/README.md) — quantized 27B runner and committed evidence
 - [Interactive replay](demo/index.html)
 - [Browser-only WebGPU demo](webgpu-demo/index.html) — no waitlist; use it today

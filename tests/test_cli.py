@@ -17,6 +17,8 @@ from semif_phase1.cli import main
     (["--mode", "direct", "--mlx-bits", "4"], "requires --backend mlx"),
     (["--mode", "direct", "--mlx-cache-limit-mib", "0"], "requires --backend mlx"),
     (["--mode", "direct", "--backend", "mlx", "--mlx-cache-limit-mib", "-1"], "must be nonnegative"),
+    (["--mode", "direct", "--sglang-url", "http://127.0.0.1:30000"], "require --backend sglang"),
+    (["--mode", "direct", "--sglang-timeout", "5"], "require --backend sglang"),
 ])
 def test_invalid_backend_combinations_fail_before_loading(tmp_path, monkeypatch, capsys, extra, message):
     monkeypatch.setattr(sys, "argv", ["semif-score", "--model", "unused", "--revision", "unused",
@@ -161,3 +163,89 @@ def test_existing_output_is_not_overwritten(run_cli, backends, capsys):
     assert run_cli.output.read_bytes() == original
     backends.torch.load_causal_model.assert_not_called()
     backends.mlx.load_model.assert_not_called()
+
+
+@pytest.mark.parametrize("mode,message", [
+    ("shared", "direct and serial"),
+    ("reranker", "direct and serial"),
+])
+def test_stabilize_order_rejects_unsupported_modes(run_cli, backends, capsys, mode, message):
+    with pytest.raises(SystemExit) as error:
+        run_cli.run(mode, "--stabilize-order", "2")
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err
+    backends.torch.load_causal_model.assert_not_called()
+
+
+def test_stabilize_order_requires_k_at_least_two(run_cli, backends, capsys):
+    with pytest.raises(SystemExit) as error:
+        run_cli.run("direct", "--stabilize-order", "1")
+    assert error.value.code == 2
+    assert "K >= 2" in capsys.readouterr().err
+    backends.torch.load_causal_model.assert_not_called()
+
+
+def test_stabilize_order_averages_stubbed_direct_scores(run_cli, backends):
+    from semif_phase1.order import STABILIZE_PROMPT_VERSION
+
+    def score(model, tokenizer, row, metadata, max_tokens):
+        ids = [option["id"] for option in row["options"]]
+        # Prefer display slot 0 so identity and reverse disagree on semantics.
+        logits = [4.0] + [0.0] * (len(ids) - 1)
+        return {
+            "id": row["id"],
+            "option_ids": ids,
+            "option_logits": logits,
+            "probabilities": [0.9] + [0.1 / (len(ids) - 1)] * (len(ids) - 1),
+            "prompt_sha256": "x",
+            "prompt_version": "direct-options-v1",
+            "total_seconds": 0.05,
+            "model": metadata,
+        }
+
+    backends.torch.direct_score.side_effect = score
+    run_cli.run("direct", "--stabilize-order", "2", "--stabilize-order-seed", "0")
+    rows = [json.loads(line) for line in run_cli.output.read_text().splitlines()]
+    assert len(rows) == 2
+    assert all(row["prompt_version"] == STABILIZE_PROMPT_VERSION for row in rows)
+    assert all(row["stabilize_order"]["cost_multiplier"] == 2 for row in rows)
+    # Two permutations per input row.
+    assert backends.torch.direct_score.call_count == 4
+
+
+@pytest.fixture
+def sglang(backends, monkeypatch):
+    from semif_phase1 import sglang_backend
+
+    fake = SimpleNamespace(
+        load_model=create_autospec(sglang_backend.load_model, return_value=backends.loaded),
+        score=Mock(side_effect=backends.results),
+        SerialPrefixScorer=Mock(return_value=SimpleNamespace(score=Mock(side_effect=backends.results))),
+        score_shared=Mock(return_value=(backends.results, backends.timing)),
+        reranker_score=Mock(side_effect=backends.results),
+    )
+    for name, value in vars(fake).items():
+        monkeypatch.setattr(sglang_backend, name, value)
+    return fake
+
+
+@pytest.mark.parametrize("mode", ["direct", "serial", "shared", "reranker"])
+def test_sglang_routes_every_mode_to_its_scorer(run_cli, backends, sglang, mode):
+    flags = ["--sglang-url", "http://127.0.0.1:30001", "--sglang-timeout", "12.5"] if mode == "reranker" else []
+    run_cli.run(mode, "--backend", "sglang", *flags)
+    model, tokenizer, metadata = backends.loaded
+    url, timeout = ("http://127.0.0.1:30001", 12.5) if flags else ("http://127.0.0.1:30000", 300.0)
+    sglang.load_model.assert_called_once_with("test/model", "a" * 40, url=url, timeout=timeout, max_tokens=128)
+    assert all(mock.call_count == 0 for mock in vars(backends.torch).values())
+    if mode in {"direct", "reranker"}:
+        scorer = sglang.score if mode == "direct" else sglang.reranker_score
+        assert scorer.call_args_list == [call(model, tokenizer, row, metadata, 128) for row in run_cli.rows]
+    elif mode == "serial":
+        sglang.SerialPrefixScorer.assert_called_once_with(model, tokenizer, metadata, 128)
+        assert sglang.SerialPrefixScorer.return_value.score.call_args_list == [call(row) for row in run_cli.rows]
+    else:
+        sglang.score_shared.assert_called_once_with(model, tokenizer, run_cli.rows, metadata, 128)
+    expected = backends.results if mode != "shared" else [
+        {**result, "shared_timing": backends.timing} for result in backends.results
+    ]
+    assert [json.loads(line) for line in run_cli.output.read_text(encoding="utf-8").splitlines()] == expected
