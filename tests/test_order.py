@@ -60,6 +60,18 @@ def test_select_permutations_includes_identity_and_reverse():
     assert len(select_permutations(3, 6, seed=0)) == 6
 
 
+def test_select_permutations_does_not_enumerate_many_options():
+    import time
+
+    started = time.perf_counter()
+    perms = select_permutations(20, 8, seed=0)
+    assert time.perf_counter() - started < 0.5  # 20! permutations would never finish
+    assert perms[0] == tuple(range(20)) and perms[1] == tuple(reversed(range(20)))
+    assert len(set(perms)) == 8 and all(sorted(perm) == list(range(20)) for perm in perms)
+    assert select_permutations(20, 8, seed=0) == perms  # deterministic per seed
+    assert select_permutations(20, 8, seed=1) != perms
+
+
 def test_align_and_average_logits_then_softmax():
     canonical = ["yes", "no", "maybe"]
     # Identity: yes strongest. Reversed display scored with letter-A bias toward maybe.

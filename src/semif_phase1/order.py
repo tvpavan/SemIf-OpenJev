@@ -45,31 +45,46 @@ def apply_permutation(row: dict, permutation: Sequence[int]) -> dict:
     return altered
 
 
+#: Largest option count whose permutations are enumerated (8! = 40320). Up to here the sampled
+#: orders are exactly those of the original enumerate-and-shuffle selection, so existing
+#: stabilized results reproduce. Beyond it enumeration grows factorially (10 options took 1.45 s,
+#: 12 would take minutes and gigabytes), so orders are drawn one at a time instead.
+ENUMERATE_MAX_OPTIONS = 8
+
+
 def select_permutations(n_options: int, k: int, *, seed: int = 0) -> list[tuple[int, ...]]:
     """Choose ``k`` distinct display permutations, always including identity and reverse when possible.
 
     Deterministic. When ``n_options!`` is at most ``k``, returns every permutation
     (identity first). Otherwise samples without replacement after locking identity
-    and the reversed order.
+    and the reversed order. Cost is O(k * n_options) above ``ENUMERATE_MAX_OPTIONS``.
     """
     check_stabilize_k(k)
     if n_options < 2:
         raise ValueError("Need at least two options to permute")
     identity = tuple(range(n_options))
     reversed_order = tuple(reversed(range(n_options)))
-    all_perms = list(itertools.permutations(range(n_options)))
-    if k >= len(all_perms):
-        # Identity first for stable readout metadata.
-        rest = [perm for perm in all_perms if perm != identity]
+    if k >= math.factorial(n_options):
+        # Identity first for stable readout metadata. Only reachable for small n_options.
+        rest = [perm for perm in itertools.permutations(range(n_options)) if perm != identity]
         return [identity, *rest]
     chosen: list[tuple[int, ...]] = [identity]
     if reversed_order != identity and k >= 2:
         chosen.append(reversed_order)
-    remaining = [perm for perm in all_perms if perm not in chosen]
     rng = random.Random(seed)
-    rng.shuffle(remaining)
+    if n_options <= ENUMERATE_MAX_OPTIONS:
+        remaining = [perm for perm in itertools.permutations(range(n_options)) if perm not in chosen]
+        rng.shuffle(remaining)
+        while len(chosen) < k:
+            chosen.append(remaining.pop())
+        return chosen
+    # k < n_options! here, and n_options! > 40320, so a repeat draw is rare and the loop ends.
+    seen = set(chosen)
     while len(chosen) < k:
-        chosen.append(remaining.pop())
+        perm = tuple(rng.sample(range(n_options), n_options))
+        if perm not in seen:
+            seen.add(perm)
+            chosen.append(perm)
     return chosen
 
 
